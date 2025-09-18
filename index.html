@@ -1,0 +1,801 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Luggage Handler 3D – Single HTML</title>
+  <style>
+    html, body { height: 100%; margin: 0; overflow: hidden; background: #0b1020; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    #overlay { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(1200px 600px at 50% 10%, rgba(255,255,255,0.06), transparent), #0b1020; color: #eaf2ff; }
+    #overlay .panel { max-width: 780px; padding: 24px; border-radius: 16px; background: rgba(255,255,255,0.06); box-shadow: 0 10px 40px rgba(0,0,0,0.4); }
+    #overlay h1 { margin: 0 0 8px; font-weight: 800; letter-spacing: 0.2px; }
+    #overlay p { opacity: 0.9; line-height: 1.5; }
+    #overlay kbd { background: rgba(255,255,255,0.15); padding: 2px 6px; border-radius: 6px; box-shadow: inset 0 -1px rgba(0,0,0,0.35); font-weight: 700; }
+    #overlay button { margin-top: 14px; padding: 12px 18px; border-radius: 12px; border: 0; background: linear-gradient(135deg, #6aa3ff, #3e7bff); color: white; font-weight: 800; letter-spacing: 0.4px; cursor: pointer; }
+
+    #hud { position: fixed; left: 14px; top: 14px; color: #eaf2ff; font-size: 14px; z-index: 2; display: grid; gap: 6px; }
+    #hud .card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; padding: 10px 12px; backdrop-filter: blur(4px); }
+    #hud .row { display: flex; gap: 12px; }
+    #hud .metric { font-weight: 700; }
+    #hud .title { opacity: 0.7; font-weight: 600; margin-right: 6px; }
+
+    #crosshair { position: fixed; left: 50%; top: 50%; width: 18px; height: 18px; margin-left: -9px; margin-top: -9px; z-index: 2; }
+    #crosshair::before, #crosshair::after { content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%,-50%); background: #eaf2ff; }
+    #crosshair::before { width: 2px; height: 14px; border-radius: 1px; }
+    #crosshair::after { width: 14px; height: 2px; border-radius: 1px; }
+
+    #notices { position: fixed; right: 14px; bottom: 14px; display: grid; gap: 8px; z-index: 3; }
+    .toast { background: rgba(0,0,0,0.65); color: #fff; padding: 10px 12px; border-radius: 10px; box-shadow: 0 6px 30px rgba(0,0,0,0.35); font-size: 13px; }
+
+    canvas { display: block; }
+  </style>
+
+  <!-- Import Map fixes the bare specifier imports used by three.js addons -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "/node_modules/three/build/three.module.js",
+      "three/addons/": "/node_modules/three/examples/jsm/"
+    }
+  }
+  </script>
+
+  <!-- Optional: warn if the browser doesn't support import maps -->
+  <script>
+    (function(){
+      if (!('supports' in HTMLScriptElement) || !HTMLScriptElement.supports('importmap')) {
+        const w = document.createElement('div');
+        w.style.cssText = 'position:fixed;inset:0;display:grid;place-items:center;background:#0b1020;color:#fff;z-index:9999;font:16px system-ui';
+        w.innerHTML = '<div style="max-width:640px;padding:16px;border-radius:12px;background:rgba(255,255,255,0.08)">Your browser does not support <b>import maps</b>. Please open this page in a recent Chromium, Firefox, or Safari version.</div>';
+        document.addEventListener('DOMContentLoaded', () => document.body.appendChild(w));
+      }
+    })();
+  </script>
+</head>
+<body>
+  <div id="overlay">
+    <div class="panel">
+      <h1>✈️ Luggage Handler 3D</h1>
+      <p>
+        You are a ramp agent on the tarmac. Load bags into the plane’s cargo hold.
+        In the real world, luggage often gets <strong>lost</strong> or <strong>broken</strong> — this simulator reflects that.
+      </p>
+      <p>
+        Controls: <kbd>WASD</kbd> move · <kbd>Mouse</kbd> look · <kbd>E</kbd> pick/drop · <kbd>Q</kbd> throw · <kbd>Shift</kbd> sprint · <kbd>R</kbd> restart · <kbd>T</kbd> run self‑tests.
+      </p>
+      <p>
+        <strong>Note:</strong> If your browser blocks pointer lock (common in sandboxed iframes), the game will automatically switch to a <em>drag‑to‑look</em> fallback.
+      </p>
+      <button id="start">Start</button>
+    </div>
+  </div>
+
+  <div id="hud" style="display:none">
+    <div class="card">
+      <div class="row"><span class="title">Loaded:</span> <span id="loaded" class="metric">0</span>
+        <span class="title">Broken:</span> <span id="broken" class="metric">0</span>
+        <span class="title">Lost:</span> <span id="lost" class="metric">0</span>
+      </div>
+      <div class="row"><span class="title">Handle quality:</span> <span id="quality" class="metric">100%</span></div>
+      <div class="row"><span class="title">Diagnostics:</span> <span id="diag" class="metric">starting…</span></div>
+    </div>
+    <div class="card" id="objective">🎯 Gently place bags inside the cargo bay (blue bay). Don't let them fall off the belt.</div>
+    <div class="card">
+      <div class="row"><span class="title">Progress:</span> <span id="progress" class="metric">0/60</span></div>
+    </div>
+  </div>
+
+  <div id="crosshair" style="display:none"></div>
+  <div id="notices"></div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+    // --- Diagnostics ---
+    const diagEl = document.getElementById('diag');
+    try {
+      if (!THREE || !PointerLockControls) throw new Error('three.js modules not loaded');
+      diagEl.textContent = 'modules OK';
+    } catch (e) {
+      diagEl.textContent = 'module load failed';
+      throw e;
+    }
+
+    // --- Core setup ---
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b1020);
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 200);
+    camera.position.set(0, 1.65, 6);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    // Lighting
+    const hemi = new THREE.HemisphereLight(0xcfe6ff, 0x202030, 0.8);
+    scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+    sun.position.set(10, 15, 5);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(1024, 1024);
+    scene.add(sun);
+
+    // Ground (tarmac)
+    const groundMat = new THREE.MeshStandardMaterial({ color: 0x1a2038, roughness: 1, metalness: 0 });
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // Subtle grid lines
+    const grid = new THREE.GridHelper(200, 60, 0x2e3a6a, 0x182142);
+    grid.position.y = 0.01;
+    scene.add(grid);
+
+    // Simple airplane cargo bay (target area)
+    const baySize = new THREE.Vector3(3.5, 2.0, 2.5);
+    const bayGeo = new THREE.BoxGeometry(baySize.x, baySize.y, baySize.z);
+    const bayMat = new THREE.MeshStandardMaterial({ color: 0x2a63ff, roughness: 0.6, metalness: 0.1, transparent: true, opacity: 0.25 });
+    const bay = new THREE.Mesh(bayGeo, bayMat);
+    bay.position.set(-4, 1, -3);
+    bay.castShadow = true;
+    bay.receiveShadow = true;
+    scene.add(bay);
+
+    // Cargo bay floor (solid for collisions)
+    const bayFloor = new THREE.Mesh(new THREE.BoxGeometry(baySize.x, 0.1, baySize.z), new THREE.MeshStandardMaterial({ color: 0x2846a3 }));
+    bayFloor.position.set(bay.position.x, 0.5, bay.position.z);
+    bayFloor.receiveShadow = true;
+    scene.add(bayFloor);
+
+    // Belt system
+    const beltLength = 12;
+    const beltWidth = 1.2;
+    const beltHeight = 0.6;
+    const beltY = beltHeight;
+    const beltStart = new THREE.Vector3(6, beltY, 0);
+    const beltEnd = new THREE.Vector3(0, beltY, 0);
+
+    const beltMat = new THREE.MeshStandardMaterial({ color: 0x2b2f3f, roughness: 0.9 });
+    const beltBase = new THREE.Mesh(new THREE.BoxGeometry(beltLength, 0.3, beltWidth + 0.4), new THREE.MeshStandardMaterial({ color: 0x141827 }));
+    beltBase.position.copy(beltStart.clone().add(beltEnd).multiplyScalar(0.5));
+    beltBase.position.y = beltY - 0.15;
+    beltBase.scale.x = 1.0;
+    beltBase.castShadow = true; beltBase.receiveShadow = true;
+    scene.add(beltBase);
+
+    const belt = new THREE.Mesh(new THREE.BoxGeometry(beltLength, 0.1, beltWidth), beltMat);
+    belt.position.copy(beltBase.position);
+    belt.position.y = beltY;
+    belt.receiveShadow = true;
+    scene.add(belt);
+
+    // Lost pit at the end of belt
+    const pit = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.2, 2.2), new THREE.MeshStandardMaterial({ color: 0x421a1a }));
+    pit.position.set(beltStart.x + 1.1, 0.1, beltStart.z);
+    pit.receiveShadow = true;
+    scene.add(pit);
+
+    // Decorative cones
+    const coneGeo = new THREE.ConeGeometry(0.18, 0.5, 24);
+    const coneMat = new THREE.MeshStandardMaterial({ color: 0xff7b3a, roughness: 0.7 });
+    for (let i = 0; i < 6; i++) {
+      const c = new THREE.Mesh(coneGeo, coneMat);
+      c.position.set(-2 + i * 0.6, 0.25, -5);
+      c.castShadow = true; scene.add(c);
+    }
+
+    // === Controls: pointer-lock with automatic fallback ===
+    const controls = new PointerLockControls(camera, document.body);
+    let usePointerLock = false;
+
+    const velocity = new THREE.Vector3();
+    const direction = new THREE.Vector3();
+    let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false, sprint = false;
+
+    // Fallback drag-to-look state
+    let dragging = false; let lastX = 0, lastY = 0; let yaw = 0, pitch = 0;
+    const SENSITIVITY = 0.0025;
+
+    // UI elements
+    const overlay = document.getElementById('overlay');
+    const hud = document.getElementById('hud');
+    const crosshair = document.getElementById('crosshair');
+    const startBtn = document.getElementById('start');
+    const notices = document.getElementById('notices');
+
+    startBtn.addEventListener('click', startGame);
+
+    function startGame() {
+      // Try pointer lock first; if blocked (e.g., sandboxed iframe) fall back.
+      try {
+        controls.lock();
+        // If the browser silently ignores lock, detect after a tick.
+        setTimeout(() => {
+          if (!usePointerLock && document.pointerLockElement !== document.body) {
+            startFallback();
+          }
+        }, 300);
+      } catch (e) {
+        if (e && (e.name === 'SecurityError' || /pointer lock/i.test(e.message))) {
+          startFallback();
+        } else {
+          throw e;
+        }
+      }
+    }
+
+    controls.addEventListener('lock', () => {
+      usePointerLock = true;
+      overlay.style.display = 'none'; hud.style.display = 'grid'; crosshair.style.display = 'block';
+      toast('Pointer lock enabled');
+      diagEl.textContent = (diagEl.textContent + ' | pointer-lock OK');
+    });
+    controls.addEventListener('unlock', () => {
+      usePointerLock = false; dragging = false;
+      overlay.style.display = 'grid'; hud.style.display = 'none'; crosshair.style.display = 'none';
+    });
+
+    function startFallback() {
+      usePointerLock = false;
+      overlay.style.display = 'none'; hud.style.display = 'grid'; crosshair.style.display = 'block';
+      toast('Pointer lock blocked — switched to drag‑to‑look');
+      diagEl.textContent = (diagEl.textContent + ' | no pointer-lock');
+      // Initialize yaw/pitch from current camera
+      const e = new THREE.Euler().copy(camera.rotation);
+      yaw = e.y; pitch = e.x;
+      // Mouse controls
+      renderer.domElement.addEventListener('mousedown', (ev) => { dragging = true; lastX = ev.clientX; lastY = ev.clientY; });
+      window.addEventListener('mouseup', () => { dragging = false; });
+      window.addEventListener('mousemove', (ev) => {
+        if (!dragging) return;
+        const dx = ev.clientX - lastX; const dy = ev.clientY - lastY; lastX = ev.clientX; lastY = ev.clientY;
+        yaw -= dx * SENSITIVITY;
+        pitch -= dy * SENSITIVITY;
+        const maxPitch = Math.PI/2 - 0.01;
+        if (pitch > maxPitch) pitch = maxPitch; if (pitch < -maxPitch) pitch = -maxPitch;
+        camera.rotation.set(pitch, yaw, 0, 'YXZ');
+      });
+    }
+
+    // Keyboard
+    const onKey = (e, down) => {
+      switch (e.code) {
+        case 'KeyW': moveForward = down; break;
+        case 'KeyS': moveBackward = down; break;
+        case 'KeyA': moveLeft = down; break;
+        case 'KeyD': moveRight = down; break;
+        case 'ShiftLeft': sprint = down; break;
+        case 'KeyR': if (down) restart(); break;
+        case 'KeyE': if (down) togglePick(); break;
+        case 'KeyQ': if (down) throwCarried(); break;
+        case 'KeyT': if (down) runSelfTests(); break; // simple runtime tests
+      }
+    }
+    document.addEventListener('keydown', e => onKey(e, true));
+    document.addEventListener('keyup', e => onKey(e, false));
+
+    // Simple player collider against world bounds
+    const worldMin = new THREE.Vector3(-30, 0, -30);
+    const worldMax = new THREE.Vector3(30, 10, 30);
+
+    // Raycaster for picking bags
+    const raycaster = new THREE.Raycaster();
+
+    // Luggage management
+    const bags = [];
+    const MAX_BAGS = 60;
+    const bagMaterials = [0x5fb0ff, 0x8fd15a, 0xffc857, 0xff6b6b, 0x7f8cff, 0xa97bdc].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.8 }));
+    
+    // Different suitcase shapes and sizes
+    const suitcaseTypes = [
+      { name: 'small', width: 0.4, height: 0.25, depth: 0.3, weight: 0.8 },
+      { name: 'medium', width: 0.5, height: 0.28, depth: 0.36, weight: 1.0 },
+      { name: 'large', width: 0.6, height: 0.32, depth: 0.42, weight: 1.2 },
+      { name: 'wide', width: 0.65, height: 0.26, depth: 0.28, weight: 1.1 },
+      { name: 'tall', width: 0.45, height: 0.35, depth: 0.31, weight: 1.0 }
+    ];
+
+    function createBag(spawnOnBelt = true) {
+      const m = bagMaterials[Math.floor(Math.random() * bagMaterials.length)].clone();
+      const suitcaseType = suitcaseTypes[Math.floor(Math.random() * suitcaseTypes.length)];
+      
+      // Create suitcase with rounded corners and handle
+      const bag = createSuitcase(suitcaseType, m);
+      bag.castShadow = true; bag.receiveShadow = true;
+      bag.userData = {
+        ...bag.userData, // Keep existing properties like isSuitcase
+        velocity: new THREE.Vector3(),
+        carried: false,
+        fragile: Math.random() < 0.35, // some bags are fragile
+        broken: false,
+        lastDropHeight: 0,
+        value: Math.random() < 0.15 ? 3 : 1, // 15% chance for valuable bags
+        type: suitcaseType.name,
+        weight: suitcaseType.weight
+      };
+      if (bag.userData.fragile) {
+        m.emissive = new THREE.Color(0x111111);
+        m.emissiveIntensity = 1.0;
+      }
+      
+      // Add sparkle effect for valuable bags
+      if (bag.userData.value > 1) {
+        bag.material.emissive = new THREE.Color(0xffff00);
+        bag.material.emissiveIntensity = 0.3;
+        toast('💎 Valuable bag detected! Handle with extra care!');
+      }
+      if (spawnOnBelt) {
+        bag.position.set(beltStart.x - 0.5, beltY + 0.2, beltStart.z + (Math.random() - 0.5) * (beltWidth - 0.2));
+      } else {
+        bag.position.set(0, 0.25, 0);
+      }
+      scene.add(bag);
+      bags.push(bag);
+      console.log('Created bag:', bag, 'position:', bag.position, 'userData:', bag.userData);
+      return bag;
+    }
+
+    // Create realistic suitcase with handle and details
+    function createSuitcase(type, material) {
+      // For now, use simple boxes to fix the picking issue
+      // TODO: Re-enable complex suitcases once raycaster is fixed
+      const bag = new THREE.Mesh(new THREE.BoxGeometry(type.width, type.height, type.depth), material);
+      bag.userData.isSuitcase = true;
+      return bag;
+      
+      /* Original complex suitcase code (commented out for debugging)
+      const group = new THREE.Group();
+      
+      // Main body with rounded corners
+      const bodyGeo = new THREE.BoxGeometry(type.width, type.height, type.depth, 2, 2, 2);
+      const body = new THREE.Mesh(bodyGeo, material);
+      group.add(body);
+      
+      // Add handle (small cylinder on top)
+      const handleGeo = new THREE.CylinderGeometry(0.02, 0.02, type.width * 0.6, 8);
+      const handleMat = new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.3, metalness: 0.8 });
+      const handle = new THREE.Mesh(handleGeo, handleMat);
+      handle.rotation.z = Math.PI / 2;
+      handle.position.set(0, type.height / 2 + 0.02, 0);
+      group.add(handle);
+      
+      // Add wheels at the bottom
+      const wheelGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.02, 8);
+      const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1a1a1a, roughness: 0.2, metalness: 0.9 });
+      
+      const wheel1 = new THREE.Mesh(wheelGeo, wheelMat);
+      wheel1.rotation.z = Math.PI / 2;
+      wheel1.position.set(-type.width / 3, -type.height / 2 + 0.03, type.depth / 2 - 0.01);
+      group.add(wheel1);
+      
+      const wheel2 = new THREE.Mesh(wheelGeo, wheelMat);
+      wheel2.rotation.z = Math.PI / 2;
+      wheel2.position.set(type.width / 3, -type.height / 2 + 0.03, type.depth / 2 - 0.01);
+      group.add(wheel2);
+      
+      // Add zipper line (simple line on front)
+      const zipperGeo = new THREE.BoxGeometry(type.width * 0.8, 0.01, 0.01);
+      const zipperMat = new THREE.MeshStandardMaterial({ color: 0x444444, roughness: 0.5 });
+      const zipper = new THREE.Mesh(zipperGeo, zipperMat);
+      zipper.position.set(0, 0, type.depth / 2 + 0.01);
+      group.add(zipper);
+      
+      // Make sure the group can be raycast against
+      group.userData.isSuitcase = true;
+      
+      return group;
+      */
+    }
+
+    // Periodic spawner
+    let spawnTimer = 0;
+    const spawnInterval = 2.2; // seconds
+
+    // Game stats
+    let loaded = 0, broken = 0, lost = 0, totalSpawned = 0;
+    const loadedEl = document.getElementById('loaded');
+    const brokenEl = document.getElementById('broken');
+    const lostEl = document.getElementById('lost');
+    const qualityEl = document.getElementById('quality');
+    const progressEl = document.getElementById('progress');
+
+    function toast(text) {
+      const t = document.createElement('div');
+      t.className = 'toast';
+      t.textContent = text;
+      notices.appendChild(t);
+      setTimeout(() => { t.style.opacity = '0'; t.style.transform = 'translateY(6px)'; }, 2200);
+      setTimeout(() => { notices.removeChild(t); }, 2800);
+    }
+
+    function updateStats() {
+      loadedEl.textContent = loaded;
+      brokenEl.textContent = broken;
+      lostEl.textContent = lost;
+      progressEl.textContent = `${totalSpawned}/${MAX_BAGS}`;
+      const total = loaded + broken + lost + 0.0001;
+      const quality = Math.max(0, 100 * (1 - (broken + lost * 0.8) / total));
+      qualityEl.textContent = quality.toFixed(0) + '%';
+      
+      // Update objective with progress
+      const objectiveEl = document.getElementById('objective');
+      if (totalSpawned < MAX_BAGS) {
+        objectiveEl.textContent = `🎯 Load bags into cargo bay. Progress: ${totalSpawned}/${MAX_BAGS} bags spawned`;
+      } else {
+        objectiveEl.textContent = `🎯 All bags spawned! Load remaining bags to finish.`;
+      }
+      
+      // Update progress display
+      if (progressEl) {
+        progressEl.textContent = `${totalSpawned}/${MAX_BAGS}`;
+      }
+    }
+    
+    function checkWinCondition() {
+      const totalProcessed = loaded + broken + lost;
+      if (totalProcessed >= MAX_BAGS) {
+        const brokenPercentage = (broken / MAX_BAGS) * 100;
+        if (brokenPercentage < 50) {
+          showGameOver(true, `🎉 SUCCESS! You passed! Only ${brokenPercentage.toFixed(1)}% bags broken.`);
+        } else {
+          showGameOver(false, `❌ FAILED! ${brokenPercentage.toFixed(1)}% bags broken. Need less than 50% to pass.`);
+        }
+      } else {
+        // Check if player is close to winning
+        const remainingBags = MAX_BAGS - totalProcessed;
+        if (remainingBags <= 5 && remainingBags > 0) {
+          toast(`🎯 Only ${remainingBags} bags left to process!`);
+        }
+      }
+    }
+    
+    function showGameOver(success, message) {
+      const overlay = document.getElementById('overlay');
+      const panel = overlay.querySelector('.panel');
+      panel.innerHTML = `
+        <h1>${success ? '🎉' : '❌'} Game Over</h1>
+        <p>${message}</p>
+        <p><strong>Final Stats:</strong><br>
+        Loaded: ${loaded} | Broken: ${broken} | Lost: ${lost}<br>
+        Quality: ${((loaded / MAX_BAGS) * 100).toFixed(1)}%</p>
+        <button id="restart">Play Again</button>
+      `;
+      overlay.style.display = 'grid';
+      document.getElementById('restart').addEventListener('click', restart);
+    }
+
+    // Carry / throw
+    let carriedBag = null;
+
+    function togglePick() {
+      if (carriedBag) { dropCarried(); return; }
+      
+      console.log('Attempting to pick up bag...');
+      console.log('Total bags in scene:', bags.length);
+      console.log('Camera position:', camera.position);
+      
+      // pick
+      raycaster.setFromCamera(new THREE.Vector2(0,0), camera);
+      
+      // Test raycaster against all objects in scene to see what we're hitting
+      const allObjects = scene.children.filter(child => child !== camera);
+      const allHits = raycaster.intersectObjects(allObjects, true);
+      console.log('Ray hits against ALL scene objects:', allHits.length);
+      allHits.forEach((hit, i) => {
+        console.log(`All hit ${i}:`, hit.object, 'distance:', hit.distance, 'type:', hit.object.type);
+      });
+      
+      const hits = raycaster.intersectObjects(bags, false); // Changed back to false for direct objects
+      
+      console.log('Ray hits against bags only:', hits.length, 'objects');
+      hits.forEach((hit, i) => {
+        console.log(`Bag hit ${i}:`, hit.object, 'distance:', hit.distance, 'userData:', hit.object.userData);
+      });
+      
+      const hit = hits.find(h => h.distance < 2.0 && h.object.userData.isSuitcase && !h.object.userData.broken);
+      if (hit) {
+        const bag = hit.object;
+        bag.userData.carried = true;
+        carriedBag = bag;
+        toast(bag.userData.fragile ? 'Picked up FRAGILE bag — handle with care!' : 'Picked up bag');
+        console.log('Successfully picked up bag:', bag);
+      } else {
+        console.log('No valid bag found to pick up');
+        console.log('Available bags:', bags.length);
+        bags.forEach((bag, i) => {
+          console.log(`Bag ${i}:`, bag, 'position:', bag.position, 'userData:', bag.userData);
+        });
+      }
+    }
+
+    function dropCarried(gentle = true) {
+      if (!carriedBag) return;
+      const bag = carriedBag;
+      bag.userData.carried = false;
+      carriedBag = null;
+      // If inside bay, count as loaded; if dropped too fast, may break.
+      const speed = bag.userData.velocity.length();
+      const inBay = pointInsideBox(bag.position, bay);
+      if (inBay) {
+        if (speed > 3 || (!gentle && speed > 1.5)) {
+          markBroken(bag, 'Rough handling in cargo bay — BROKEN');
+        } else {
+          loaded++;
+          bag.visible = false;
+          removeBag(bag);
+          toast('Loaded ✓');
+        }
+      } else {
+        // Dropped on ground; may break based on height and fragility
+        const chance = (bag.userData.fragile ? 0.5 : 0.2) + Math.min(1, speed / 6);
+        if (Math.random() < chance) markBroken(bag, 'Dropped too hard — BROKEN');
+      }
+      updateStats();
+    }
+
+    function throwCarried() {
+      if (!carriedBag) return;
+      const bag = carriedBag;
+      dropCarried(false);
+      // Apply impulse forward from camera
+      const fwd = new THREE.Vector3();
+      camera.getWorldDirection(fwd);
+      if (!bag.userData.broken && bag.visible) {
+        bag.userData.velocity.add(fwd.multiplyScalar(8 + (sprint ? 2 : 0)));
+      }
+    }
+
+    function markBroken(bag, reason='BROKEN') {
+      if (bag.userData.broken) return;
+      bag.userData.broken = true;
+      broken++;
+      bag.material.color.offsetHSL(0, -0.3, -0.4);
+      bag.material.emissive = new THREE.Color(0x000000);
+      bag.material.opacity = 0.7; bag.material.transparent = true;
+      bag.scale.y = 0.22; // squish
+      toast(reason);
+    }
+
+    function removeBag(bag) {
+      const idx = bags.indexOf(bag);
+      if (idx >= 0) bags.splice(idx, 1);
+      setTimeout(() => { scene.remove(bag); }, 50);
+    }
+
+    // Helpers
+    function pointInsideBox(point, mesh) {
+      mesh.updateMatrixWorld();
+      const size = new THREE.Vector3();
+      new THREE.Box3().setFromObject(mesh).getSize(size);
+      const box = new THREE.Box3().setFromCenterAndSize(mesh.position, size);
+      return box.containsPoint(point);
+    }
+
+    function aabb(mesh) {
+      const box = new THREE.Box3();
+      box.setFromObject(mesh);
+      return box;
+    }
+
+    function applyMovement(move) {
+      if (usePointerLock) {
+        // PointerLockControls uses forward as negative Z
+        controls.moveRight(move.x);
+        controls.moveForward(-move.z);
+      } else {
+        // Manual movement based on camera yaw/pitch (ignore vertical movement)
+        const forward = new THREE.Vector3();
+        camera.getWorldDirection(forward); forward.y = 0; forward.normalize();
+        const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0,1,0)).normalize();
+        camera.position.addScaledVector(right, move.x);
+        camera.position.addScaledVector(forward, -move.z);
+      }
+    }
+
+    // Movement loop
+    const clock = new THREE.Clock();
+
+    function restart() {
+      // Reset stats & bags
+      bags.forEach(b => scene.remove(b));
+      bags.length = 0; carriedBag = null; loaded = 0; broken = 0; lost = 0; spawnTimer = 0; totalSpawned = 0;
+      camera.position.set(0, 1.65, 6);
+      updateStats();
+      toast('Reset. Good luck!');
+    }
+
+    updateStats();
+    
+    // Test: Create a bag at the start to verify everything works
+    console.log('Creating test bag...');
+    const testBag = createBag(false);
+    testBag.position.set(0, 0.5, 0);
+    console.log('Test bag created:', testBag, 'bags array length:', bags.length);
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = Math.min(0.033, clock.getDelta());
+
+      // Spawn bags (limited to MAX_BAGS)
+      spawnTimer += dt;
+      if (spawnTimer > spawnInterval && totalSpawned < MAX_BAGS) {
+        spawnTimer = 0;
+        createBag(true);
+        totalSpawned++;
+        
+        // Check win condition after spawning all bags
+        if (totalSpawned >= MAX_BAGS) {
+          toast('🎯 All 60 bags have spawned! Load the remaining bags to finish the game.');
+          setTimeout(() => checkWinCondition(), 1000);
+        }
+      }
+
+      // Move player
+      direction.set(0, 0, 0);
+      if (moveForward) direction.z -= 1;
+      if (moveBackward) direction.z += 1;
+      if (moveLeft) direction.x -= 1;
+      if (moveRight) direction.x += 1;
+      direction.normalize();
+
+      const speed = (sprint ? 30.0 : 16.0);
+      velocity.x += direction.x * speed * dt;
+      velocity.z += direction.z * speed * dt;
+      // Dampen
+      velocity.multiplyScalar(0.9);
+
+      // Apply movement (keep y fixed)
+      const move = new THREE.Vector3(velocity.x * dt, 0, velocity.z * dt);
+      applyMovement(move);
+
+      // Clamp world bounds
+      camera.position.clamp(worldMin, worldMax);
+
+      // Carry logic
+      if (carriedBag) {
+        const fwd = new THREE.Vector3();
+        camera.getWorldDirection(fwd);
+        const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0,1,0)).normalize();
+        const up = new THREE.Vector3(0,1,0);
+        const pos = camera.position.clone()
+          .add(fwd.clone().multiplyScalar(1.0))
+          .add(right.clone().multiplyScalar(0))
+          .add(up.clone().multiplyScalar(0.0));
+        carriedBag.position.lerp(pos, 1.0);
+        carriedBag.rotation.y += 0.01;
+        carriedBag.userData.velocity.set(0,0,0);
+      }
+
+      // Belt makes bags move toward beltEnd; if fall into pit => lost
+      const beltDir = beltEnd.clone().sub(beltStart).normalize();
+
+      for (const bag of [...bags]) {
+        if (bag.userData.carried) continue;
+        // If on belt (y close to belt level and x within belt range), move
+        const onBelt = Math.abs(bag.position.y - (beltY + 0.14)) < 0.25 &&
+                       bag.position.x < beltStart.x + beltLength*0.5 && bag.position.x > beltEnd.x - beltLength*0.5 &&
+                       Math.abs(bag.position.z - belt.position.z) < beltWidth * 0.6;
+        if (onBelt) {
+          bag.position.addScaledVector(beltDir, 2.2 * dt);
+        } else {
+          // Simple gravity
+          if (bag.position.y > 0.15) {
+            bag.userData.velocity.y -= 9 * dt;
+          } else {
+            bag.position.y = 0.15; bag.userData.velocity.y = 0;
+          }
+          // Integrate
+          bag.position.addScaledVector(bag.userData.velocity, dt);
+          // Ground friction
+          bag.userData.velocity.multiplyScalar(0.98);
+        }
+
+        // Lost if near pit and below belt height
+        const pitBox = aabb(pit);
+        if (pitBox.containsPoint(bag.position) && bag.visible) {
+          lost++;
+          toast('Lost — fell off the belt');
+          bag.visible = false;
+          removeBag(bag);
+          updateStats();
+          continue;
+        }
+        
+        // Warning when bags are close to falling off
+        if (bag.position.x > beltStart.x + beltLength * 0.8 && bag.position.y < beltY + 0.3) {
+          if (!bag.userData.warned) {
+            bag.userData.warned = true;
+            toast('⚠️ Bag near edge of belt!');
+          }
+        }
+
+        // If hits bay floor fast => break
+        if (pointInsideBox(bag.position, bay)) {
+          const spd = bag.userData.velocity.length();
+          if (spd > 5 && !bag.userData.broken) {
+            markBroken(bag, 'Slammed into cargo bay — BROKEN'); updateStats();
+          }
+        }
+      }
+      
+      // Check win condition periodically
+      if (totalSpawned >= MAX_BAGS && (loaded + broken + lost) >= MAX_BAGS) {
+        checkWinCondition();
+      }
+
+      renderer.render(scene, camera);
+    }
+
+    animate();
+
+    // Handle resize
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ---- Runtime self-tests (press T) ----
+    function runSelfTests() {
+      const results = [];
+      try {
+        results.push(['modules', (!!THREE && !!PointerLockControls)]);
+        // Test 1: Loading a bag when dropped gently inside bay
+        const baseLoaded = loaded;
+        const bag1 = createBag(false);
+        bag1.position.copy(bay.position);
+        bag1.userData.velocity.set(0,0,0);
+        carriedBag = bag1; bag1.userData.carried = true; dropCarried(true);
+        results.push(['load-in-bay', loaded === baseLoaded + 1]);
+        // Clean up test bag
+        if (bag1.visible) {
+          scene.remove(bag1);
+          const idx = bags.indexOf(bag1);
+          if (idx >= 0) bags.splice(idx, 1);
+        }
+        // Test 2: Break a bag with high speed in bay
+        const baseBroken = broken;
+        const bag2 = createBag(false);
+        bag2.position.copy(bay.position);
+        bag2.userData.velocity.set(6,0,0);
+        carriedBag = bag2; bag2.userData.carried = true; dropCarried(false);
+        results.push(['break-on-hard-drop', broken === baseBroken + 1]);
+        // Clean up test bag
+        if (bag2.visible) {
+          scene.remove(bag2);
+          const idx = bags.indexOf(bag2);
+          if (idx >= 0) bags.splice(idx, 1);
+        }
+        // Test 3: Lost when entering pit (will be caught next frame)
+        const baseLost = lost;
+        const bag3 = createBag(false);
+        bag3.position.copy(pit.position);
+        setTimeout(() => {
+          const ok = (lost === baseLost + 1);
+          toast('Self-test pit-lost: ' + (ok ? 'PASS' : 'FAIL'));
+          // Clean up test bag
+          if (bag3.visible) {
+            scene.remove(bag3);
+            const idx = bags.indexOf(bag3);
+            if (idx >= 0) bags.splice(idx, 1);
+          }
+        }, 40);
+        // New Test 4: Manual movement path works without pointer lock
+        const prevPos = camera.position.clone();
+        const wasPL = usePointerLock; usePointerLock = false; // force manual path
+        applyMovement(new THREE.Vector3(0, 0, -0.5)); // simulate small forward move
+        const moved = prevPos.distanceTo(camera.position) > 0.0001; // any movement
+        usePointerLock = wasPL;
+        results.push(['manual-move-works', moved]);
+
+        results.forEach(([name, pass]) => toast('Self-test ' + name + ': ' + (pass ? 'PASS' : 'FAIL')));
+      } catch (e) {
+        console.error(e);
+        toast('Self-tests error: ' + e.message);
+      }
+    }
+  </script>
+</body>
+</html>
