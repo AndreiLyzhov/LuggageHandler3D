@@ -6,3 +6,5 @@ OKAK
 A Vot i Ya suka pidor
 
 Meaaat
+
+Changing readme to pull
