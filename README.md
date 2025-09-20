@@ -1,1 +1,6 @@
 README PLEASEEE
+ZHOPAZHOPAZHOPA
+
+OKAK
+
+A Vot i Ya suka pidor
